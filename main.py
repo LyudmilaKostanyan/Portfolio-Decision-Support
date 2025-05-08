@@ -1,74 +1,70 @@
 from markov import MarkovChain
+from fuzzy import get_fast_attractiveness, attractiveness_ctrl
+import numpy as np
+import skfuzzy.control as ctrl
 
 if __name__ == "__main__":
 	states = ['Growth', 'Stable', 'Decline']
 	transitions = [
-		[0.6, 0.3, 0.1],	# Growth
-		[0.2, 0.6, 0.2],	# Stable
-		[0.1, 0.4, 0.5]		# Decline
+		[0.6, 0.3, 0.1],    # From Growth
+		[0.2, 0.6, 0.2],    # From Stable
+		[0.1, 0.4, 0.5]     # From Decline
 	]
 
 	# Define returns for each market state
 	returns = {
-		'Growth': 0.05,		# +5% return
-		'Stable': 0.00,		# 0% return
-		'Decline': -0.04	# -4% return
+		'Growth': 0.05,
+		'Stable': 0.00,
+		'Decline': -0.04
+	}
+
+	# Map market states to fuzzy numeric scale
+	market_state_score = {
+		'Decline': 20,
+		'Stable': 50,
+		'Growth': 80
 	}
 
 	market_chain = MarkovChain(states, transitions)
 
-	# Simulate a strategy over a given number of days
-	def simulate_strategy(strategy_type, days=100):
-		# state - starting state
+	# Simulation parameters
+	sim_count = 1000
+	days = 100
+
+	# Pre-create fuzzy simulators to avoid recomputation overhead
+	simulators = [ctrl.ControlSystemSimulation(attractiveness_ctrl) for _ in range(sim_count)]
+
+	def simulate_fuzzy_strategy(simulator):
 		state = 'Stable'
-		# total_return - in start 100% of capital
 		total_return = 1.0
-		# decline_streak - number of consecutive declines (for strategy B)
-		decline_streak = 0
 
 		for _ in range(days):
-			if strategy_type == 'B' and decline_streak >= 2:
-				# Strategy B: stop investing after 2 consecutive declines
-				continue
+			# Generate synthetic volatility (0 to 100)
+			volatility = np.random.uniform(0, 100)
+			state_score = market_state_score[state]
 
-			if strategy_type == 'A' or decline_streak < 2:
+			# Evaluate attractiveness
+			attractiveness = get_fast_attractiveness(simulator, state_score, volatility)
+
+			if attractiveness > 60:
 				r = returns[state]
 				total_return *= (1 + r)
 
-			# Transition to the next state
-			next_s = market_chain.next_state(state)
-
-			# Update decline streak
-			if next_s == 'Decline':
-				decline_streak += 1
-			else:
-				decline_streak = 0
-
-			state = next_s
+			state = market_chain.next_state(state)
 
 		return total_return
 
-	# Simulate both strategies
-	sim_count = 1000
-	a_results = []
-	b_results = []
+	# Run simulations
+	fuzzy_results = [
+		simulate_fuzzy_strategy(simulators[i])
+		for i in range(sim_count)
+	]
 
-	for _ in range(sim_count):
-		a_results.append(simulate_strategy('A'))
-		b_results.append(simulate_strategy('B'))
+	avg_fuzzy = sum(fuzzy_results) / sim_count
 
-	# Calculate average final capital
-	avg_a = sum(a_results) / sim_count
-	avg_b = sum(b_results) / sim_count
+	print(f"Fuzzy strategy: Avg final capital after {sim_count} runs = {avg_fuzzy:.4f}")
 
-	print(f"Strategy A (Hold): Avg final capital = {avg_a:.4f}")
-	print(f"Strategy B (Exit after 2 declines): Avg final capital = {avg_b:.4f}")
-
-	# Compare and print recommendation
-	if avg_a > avg_b:
-		print("Recommendation: Strategy A (Hold) performs better on average.")
-	elif avg_b > avg_a:
-		print("Recommendation: Strategy B (Exit after 2 declines) performs better on average.")
+	if avg_fuzzy > 1.0:
+		print("Recommendation: Fuzzy-based strategy appears profitable.")
 	else:
-		print("Recommendation: Both strategies perform equally on average.")
-
+		print("Recommendation: Fuzzy-based strategy underperforms or is neutral.")
