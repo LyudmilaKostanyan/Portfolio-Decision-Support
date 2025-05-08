@@ -35,13 +35,14 @@ def simulate_fuzzy_strategy(simulator, hmm_model, observation_seq, hidden_states
 
 if __name__ == "__main__":
 	sim_count = 1000
-	days = 100
+	days = 300
 
 	# Step 1: Generate synthetic returns (or load real returns instead)
 	np.random.seed(42)
-	bullish = np.random.normal(0.01, 0.015, size=(days // 3, 1))
-	neutral = np.random.normal(0.0, 0.01, size=(days // 3, 1))
-	bearish = np.random.normal(-0.01, 0.02, size=(days // 3, 1))
+	bullish = np.random.normal(0.02, 0.01, size=(100, 1))
+	neutral = np.random.normal(0.0, 0.01, size=(100, 1))
+	bearish = np.random.normal(-0.03, 0.015, size=(100, 1))
+
 	full_returns = np.concatenate([bullish, neutral, bearish])  # shape: (days, 1)
 
 	# Step 2: Train HMM
