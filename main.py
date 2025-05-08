@@ -2,6 +2,7 @@ from markov import HiddenMarkovModel
 from fuzzy import get_fast_attractiveness, attractiveness_ctrl
 import numpy as np
 import skfuzzy.control as ctrl
+from collections import Counter
 
 # Define synthetic return levels based on state index: 0 = Bullish, 1 = Neutral, 2 = Bearish
 state_returns = {
@@ -12,9 +13,9 @@ state_returns = {
 
 # Map state index to fuzzy score for 'market_state' input
 state_score_map = {
-	0: 80,		# Bullish → high attractiveness
+	0: 80,		# Bullish
 	1: 50,		# Neutral
-	2: 20		# Bearish → low attractiveness
+	2: 20		# Bearish
 }
 
 # Simulate one run using fuzzy logic and HMM
@@ -37,18 +38,25 @@ if __name__ == "__main__":
 	sim_count = 1000
 	days = 300
 
-	# Step 1: Generate synthetic returns (or load real returns instead)
+	# Step 1: Generate improved synthetic returns
 	np.random.seed(42)
-	bullish = np.random.normal(0.02, 0.01, size=(100, 1))
-	neutral = np.random.normal(0.0, 0.01, size=(100, 1))
-	bearish = np.random.normal(-0.03, 0.015, size=(100, 1))
+	bullish = np.random.normal(0.03, 0.01, size=(100, 1))    # stronger uptrend
+	neutral = np.random.normal(0.0, 0.005, size=(100, 1))     # tighter neutral
+	bearish = np.random.normal(-0.03, 0.015, size=(100, 1))   # stronger downtrend
 
-	full_returns = np.concatenate([bullish, neutral, bearish])  # shape: (days, 1)
+	full_returns = np.concatenate([bullish, neutral, bearish])
 
 	# Step 2: Train HMM
 	hmm_model = HiddenMarkovModel()
 	hmm_model.train(full_returns)
 	hidden_states = hmm_model.predict_states(full_returns)
+
+	# Print state distribution
+	state_distribution = Counter(hidden_states)
+	print("HMM state distribution:", state_distribution)
+
+	# Optional: visualize hidden state segmentation
+	hmm_model.plot_hidden_states(full_returns, hidden_states)
 
 	# Step 3: Create FIS simulators
 	simulators = [ctrl.ControlSystemSimulation(attractiveness_ctrl) for _ in range(sim_count)]
@@ -59,8 +67,8 @@ if __name__ == "__main__":
 		for i in range(sim_count)
 	]
 
+	# Print stats
 	avg_return = sum(results) / sim_count
-
 	print(f"Fuzzy strategy: Avg final capital after {sim_count} runs = {avg_return:.4f}")
 
 	if avg_return > 1.0:
