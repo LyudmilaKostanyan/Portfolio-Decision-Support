@@ -6,6 +6,7 @@ import skfuzzy.control as ctrl
 import yfinance as yf
 from datetime import datetime, timedelta
 import pandas as pd
+import matplotlib.pyplot as plt
 
 def classify_return(r, threshold=0.02):
 	if r > threshold:
@@ -81,6 +82,9 @@ def simulate_fuzzy_strategy(simulator, start_state, market_score, vol_score, ret
 		if attractiveness > 50:
 			r = returns[state]
 			total_return *= (1 + r)
+		elif attractiveness < 50:
+			r = -returns[state]
+			total_return *= (1 - r)
 		state = market_chain.next_state(state)
 
 	return total_return
@@ -89,6 +93,7 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--mode", choices=["forecast", "backtest"], default="forecast")
 	parser.add_argument("--ticker", type=str, default="AAPL")
+	parser.add_argument("--visualization", action="store_true", help="Enable result plotting in backtest mode")
 	args = parser.parse_args()
 
 	ticker = args.ticker
@@ -98,7 +103,7 @@ if __name__ == "__main__":
 	if mode == "forecast":
 		start_date = today - timedelta(days=730)
 		data = yf.download(ticker, start=start_date, end=today, progress=False, auto_adjust=True)
-	else:  # backtest
+	else:
 		start_date = datetime(today.year - 2, 1, 1)
 		end_date = datetime(today.year - 1, 1, 1)
 		eval_end = datetime(today.year - 1, 12, 31)
@@ -153,6 +158,34 @@ if __name__ == "__main__":
 			print(f"Real return from {actual_prices.index[0].date()} to {actual_prices.index[-1].date()} = {actual_return:.4f}")
 			diff = avg_fuzzy - actual_return
 			print(f"Difference between simulated and real return = {diff:.4f}")
+
+			if args.visualization:
+				actual_series = actual_prices / actual_prices.iloc[0]
+				sim_curve = [1.0]
+				state = initial_state
+				simulator = ctrl.ControlSystemSimulation(attractiveness_ctrl)
+				for _ in range(1, len(actual_series)):
+					attractiveness = get_fast_attractiveness(simulator, market_score, vol_score)
+					if attractiveness > 50:
+						r = returns[state]
+						sim_curve.append(sim_curve[-1] * (1 + r))
+					elif attractiveness < 50:
+						r = -returns[state]
+						sim_curve.append(sim_curve[-1] * (1 - r))
+					else:
+						sim_curve.append(sim_curve[-1])
+					state = market_chain.next_state(state)
+
+				plt.figure(figsize=(10, 5))
+				plt.plot(actual_series.index[:len(sim_curve)], actual_series[:len(sim_curve)], label="Real price")
+				plt.plot(actual_series.index[:len(sim_curve)], sim_curve, label="Simulated strategy")
+				plt.xlabel("Date")
+				plt.ylabel("Normalized value")
+				plt.title(f"Backtest: {ticker}")
+				plt.legend()
+				plt.grid(True)
+				plt.tight_layout()
+				plt.show()
 		else:
 			print("Not enough real price data for comparison.")
 	else:
