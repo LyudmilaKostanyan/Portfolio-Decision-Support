@@ -1,70 +1,42 @@
 from markov import MarkovChain
 from fuzzy import get_fast_attractiveness, attractiveness_ctrl
+from portfolio import classify_state, build_transition_matrix, simulate_strategy
+import yfinance as yf
+import pandas as pd
 import numpy as np
 import skfuzzy.control as ctrl
 
 if __name__ == "__main__":
-	states = ['Growth', 'Stable', 'Decline']
-	transitions = [
-		[0.6, 0.3, 0.1],    # From Growth
-		[0.2, 0.6, 0.2],    # From Stable
-		[0.1, 0.4, 0.5]     # From Decline
-	]
-
-	# Define returns for each market state
-	returns = {
-		'Growth': 0.05,
-		'Stable': 0.00,
-		'Decline': -0.04
-	}
-
-	# Map market states to fuzzy numeric scale
-	market_state_score = {
-		'Decline': 20,
-		'Stable': 50,
-		'Growth': 80
-	}
-
-	market_chain = MarkovChain(states, transitions)
-
-	# Simulation parameters
-	sim_count = 1000
+	# Parameters
+	ticker = 'AAPL'
+	period = '1y'
+	state_labels = ['Growth', 'Stable', 'Decline']
+	state_score_map = {'Growth': 80, 'Stable': 50, 'Decline': 20}
+	returns_map = {'Growth': 0.05, 'Stable': 0.0, 'Decline': -0.04}
 	days = 100
+	sim_count = 1000
 
-	# Pre-create fuzzy simulators to avoid recomputation overhead
-	simulators = [ctrl.ControlSystemSimulation(attractiveness_ctrl) for _ in range(sim_count)]
+	# Step 1: Load data and calculate return + volatility
+	df = yf.download(ticker, period=period, auto_adjust=False)
+	df['Return'] = df['Close'].pct_change()
+	df['Volatility'] = df['Return'].rolling(5).std() * 100
+	df.dropna(inplace=True)
 
-	def simulate_fuzzy_strategy(simulator):
-		state = 'Stable'
-		total_return = 1.0
+	# Step 2: Classify market states
+	df['State'] = df['Return'].apply(classify_state)
+	state_sequence = df['State'].tolist()
+	volatility_samples = df['Volatility'].values
 
-		for _ in range(days):
-			# Generate synthetic volatility (0 to 100)
-			volatility = np.random.uniform(0, 100)
-			state_score = market_state_score[state]
+	# Step 3: Build Markov Chain
+	transition_matrix = build_transition_matrix(state_sequence, state_labels)
+	mc = MarkovChain(state_labels, transition_matrix)
 
-			# Evaluate attractiveness
-			attractiveness = get_fast_attractiveness(simulator, state_score, volatility)
-
-			if attractiveness > 60:
-				r = returns[state]
-				total_return *= (1 + r)
-
-			state = market_chain.next_state(state)
-
-		return total_return
-
-	# Run simulations
-	fuzzy_results = [
-		simulate_fuzzy_strategy(simulators[i])
-		for i in range(sim_count)
+	# Step 4: Run simulations
+	results = [
+		simulate_strategy('Stable', mc, volatility_samples, state_score_map, returns_map, days)
+		for _ in range(sim_count)
 	]
 
-	avg_fuzzy = sum(fuzzy_results) / sim_count
-
-	print(f"Fuzzy strategy: Avg final capital after {sim_count} runs = {avg_fuzzy:.4f}")
-
-	if avg_fuzzy > 1.0:
-		print("Recommendation: Fuzzy-based strategy appears profitable.")
-	else:
-		print("Recommendation: Fuzzy-based strategy underperforms or is neutral.")
+	# Step 5: Print result
+	avg = sum(results) / sim_count
+	print(f"Avg capital after {sim_count} simulations: {avg:.4f}")
