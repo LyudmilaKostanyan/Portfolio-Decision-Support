@@ -67,18 +67,17 @@ def get_market_features(window: pd.Series) -> tuple[float, float, str]:
 		return 50.0, volatility_score, "Stable"
 
 def simulate_fis_on_real_data(prices: pd.Series) -> float:
-	"""
-	Simulate trading over a year using fuzzy logic with market_state and volatility as inputs.
-	"""
 	capital = 1.0
+	position = 0  # 0 = cash, 1 = long
 
+	# daily returns and aligned price series
 	returns = prices.pct_change().dropna().reset_index(drop=True)
 	prices = prices.iloc[1:].reset_index(drop=True)
 
 	for i in range(30, len(prices) - 1):
-		window = prices[i - 30:i]
-		
-		# market_state: deviation from mean (mapped to 0–100 scale)
+		window = prices[i-30 : i]
+
+		# 1) compute market_state_val (0–100 scale)
 		diff_ratio = (window.iloc[-1] - window.mean()) / window.mean()
 		if diff_ratio > 0.02:
 			market_state_val = 80.0
@@ -87,21 +86,23 @@ def simulate_fis_on_real_data(prices: pd.Series) -> float:
 		else:
 			market_state_val = 50.0
 
-		# volatility: std scaled to 0–100
+		# 2) compute volatility_val (std dev scaled to 0–100)
 		volatility_val = min(max(window.pct_change().std() * 1000, 0), 100)
 
-		# Evaluate FIS
+		# 3) evaluate FIS
 		simulator = ctrl.ControlSystemSimulation(attractiveness_ctrl)
 		attractiveness = get_fast_attractiveness(simulator, market_state_val, volatility_val)
-
 		ret = returns[i + 1]
 
-		# Adjust capital
-		if attractiveness > 60:
+		# 4) entry/exit logic
+		if attractiveness > 60 and position == 0:
+			position = 1  # enter long
+		elif attractiveness < 40 and position == 1:
+			position = 0  # exit to cash
+
+		# 5) apply P/L only when long
+		if position == 1:
 			capital *= (1 + ret)
-		elif attractiveness < 40:
-			capital *= (1 - ret)
-		# else: stay in cash
 
 	return capital
 
