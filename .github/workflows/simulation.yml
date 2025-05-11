@@ -27,8 +27,8 @@ jobs:
 
       - name: Run simulation in backtest mode
         run: |
-          python main.py --mode backtest
+          python main.py --mode backtest --ticker AAPL
 
       - name: Run simulation in forecast mode
         run: |
-          python main.py --mode forecast
+          python main.py --mode forecast --ticker AAPL

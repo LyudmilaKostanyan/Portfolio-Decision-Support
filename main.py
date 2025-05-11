@@ -1,12 +1,12 @@
 import argparse
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from datetime import datetime
 from markov import MarkovChain
 from fuzzy import get_fast_attractiveness, attractiveness_ctrl
-import numpy as np
 import skfuzzy.control as ctrl
-import yfinance as yf
-from datetime import datetime, timedelta
-import pandas as pd
-import matplotlib.pyplot as plt
+
 
 def classify_return(r, threshold=0.02):
 	if r > threshold:
@@ -16,180 +16,116 @@ def classify_return(r, threshold=0.02):
 	else:
 		return "Stable"
 
-def build_transition_matrix(prices, threshold=0.02):
-	returns = prices.pct_change().dropna()
-	states = [classify_return(r, threshold) for r in returns]
 
-	transitions = {"Growth": {"Growth": 0, "Stable": 0, "Decline": 0},
-	               "Stable": {"Growth": 0, "Stable": 0, "Decline": 0},
-	               "Decline": {"Growth": 0, "Stable": 0, "Decline": 0}}
-
+def build_transition_matrix(states):
+	transitions = {s: {t: 0 for t in ["Growth", "Stable", "Decline"]} for s in ["Growth", "Stable", "Decline"]}
 	for i in range(1, len(states)):
 		prev, curr = states[i - 1], states[i]
 		transitions[prev][curr] += 1
 
 	matrix = []
-	for from_state in ["Growth", "Stable", "Decline"]:
-		total = sum(transitions[from_state].values())
+	for s in ["Growth", "Stable", "Decline"]:
+		total = sum(transitions[s].values())
 		if total == 0:
-			row = [1/3, 1/3, 1/3]
+			matrix.append([1 / 3] * 3)
 		else:
-			row = [transitions[from_state][to_state] / total for to_state in ["Growth", "Stable", "Decline"]]
-		matrix.append(row)
+			matrix.append([transitions[s][t] / total for t in ["Growth", "Stable", "Decline"]])
+	return matrix
 
-	return matrix, states
 
-def estimate_returns(prices, state_sequence):
-	returns = prices.pct_change().dropna()
-	grouped_returns = {"Growth": [], "Stable": [], "Decline": []}
+def estimate_state_returns(returns, states):
+	grouped = {s: [] for s in ["Growth", "Stable", "Decline"]}
+	for r, s in zip(returns, states):
+		grouped[s].append(r)
+	return {s: np.mean(grouped[s]) if grouped[s] else 0.0 for s in grouped}
 
-	for r, s in zip(returns, state_sequence):
-		grouped_returns[s].append(r)
 
-	return {
-		state: np.mean(grouped_returns[state])
-		for state in grouped_returns
-	}
-
-def get_market_features(prices, window=30):
-	returns = prices.pct_change().dropna()
-	recent_returns = returns[-window:]
-	volatility_score = min(max(recent_returns.std() * 1000, 0), 100)
-
-	recent_prices = prices[-window:]
-	mean_price = recent_prices.mean()
-	last_price = recent_prices.iloc[-1]
-	diff_ratio = (last_price - mean_price) / mean_price
-
-	if diff_ratio > 0.02:
-		market_state_score = 80
-		initial_state = 'Growth'
-	elif diff_ratio < -0.02:
-		market_state_score = 20
-		initial_state = 'Decline'
+def get_market_features(window):
+	vol = min(max(window.pct_change().std() * 1000, 0), 100)
+	diff = (window.iloc[-1] - window.mean()) / window.mean()
+	if diff > 0.02:
+		state = "Growth"
+		score = 80
+	elif diff < -0.02:
+		state = "Decline"
+		score = 20
 	else:
-		market_state_score = 50
-		initial_state = 'Stable'
+		state = "Stable"
+		score = 50
+	return score, vol, state
 
-	return market_state_score, volatility_score, initial_state
 
-def simulate_fuzzy_strategy(simulator, start_state, market_score, vol_score, returns, market_chain, days):
-	state = start_state
+def simulate_fis_on_real_data(prices):
 	total_return = 1.0
-
-	for _ in range(days):
-		attractiveness = get_fast_attractiveness(simulator, market_score, vol_score)
-		if attractiveness > 50:
-			r = returns[state]
-			total_return *= (1 + r)
-		elif attractiveness < 50:
-			r = -returns[state]
-			total_return *= (1 - r)
-		state = market_chain.next_state(state)
-
+	for i in range(30, len(prices) - 1):
+		window = prices[i - 30:i]
+		market_score, vol_score, state = get_market_features(window)
+		attractiveness = get_fast_attractiveness(ctrl.ControlSystemSimulation(attractiveness_ctrl), market_score, vol_score)
+		ret = prices.pct_change().iloc[i + 1]
+		if attractiveness > 60:
+			total_return *= (1 + ret)
+		elif attractiveness < 40:
+			total_return *= (1 - ret)
 	return total_return
 
-if __name__ == "__main__":
+
+def simulate_markov_hold(start_state, transition_matrix, state_returns, days=252, n=1000):
+	mc = MarkovChain(["Growth", "Stable", "Decline"], transition_matrix)
+	results = []
+	for _ in range(n):
+		state = start_state
+		capital = 1.0
+		for _ in range(days):
+			capital *= (1 + state_returns[state])
+			state = mc.next_state(state)
+		results.append(capital)
+	return sum(results) / n
+
+
+def main():
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--mode", choices=["forecast", "backtest"], default="forecast")
-	parser.add_argument("--ticker", type=str, default="AAPL")
-	parser.add_argument("--visualization", action="store_true", help="Enable result plotting in backtest mode")
+	parser.add_argument("--ticker", default="AAPL")
+	parser.add_argument("--mode", choices=["backtest", "forecast"], default="backtest")
 	args = parser.parse_args()
 
-	ticker = args.ticker
-	mode = args.mode
 	today = datetime.today()
-
-	if mode == "forecast":
-		start_date = today - timedelta(days=730)
-		data = yf.download(ticker, start=start_date, end=today, progress=False, auto_adjust=True)
+	if args.mode == "backtest":
+		start = f"{today.year - 2}-01-01"
+		end = f"{today.year - 1}-12-31"
 	else:
-		start_date = datetime(today.year - 2, 1, 1)
-		end_date = datetime(today.year - 1, 1, 1)
-		eval_end = datetime(today.year - 1, 12, 31)
-		data = yf.download(ticker, start=start_date, end=eval_end, progress=False, auto_adjust=True)
+		start = f"{today.year - 2}-01-01"
+		end = today.strftime("%Y-%m-%d")
 
+	data = yf.download(args.ticker, start=start, end=end, progress=False, auto_adjust=True)
+
+	# FIX: safely extract Close prices
 	if isinstance(data.columns, pd.MultiIndex):
-		prices = data["Close", ticker]
+		prices = data["Close", args.ticker]
 	else:
 		prices = data["Close"]
 
 	prices = pd.to_numeric(prices, errors="coerce").dropna()
+	returns = prices.pct_change().dropna()
+	states = [classify_return(r) for r in returns]
 
-	transition_matrix, state_sequence = build_transition_matrix(prices)
-	returns = estimate_returns(prices, state_sequence)
+	transition_matrix = build_transition_matrix(states)
+	state_returns = estimate_state_returns(returns, states)
+	market_score, vol_score, init_state = get_market_features(prices[-30:])
 
-	if mode == "forecast":
-		market_score, vol_score, initial_state = get_market_features(prices)
+	if args.mode == "backtest":
+		real_return = prices.iloc[-1] / prices.iloc[0]
+		fis_result = simulate_fis_on_real_data(prices)
+		markov_result = simulate_markov_hold(init_state, transition_matrix, state_returns)
+		print(f"Real market return: {real_return:.4f}")
+		print(f"FIS strategy return:  {fis_result:.4f}")
+		print(f"Markov hold return:  {markov_result:.4f}")
 	else:
-		past_year_prices = prices[(prices.index >= pd.Timestamp(end_date)) & (prices.index <= pd.Timestamp(eval_end))]
-		market_score, vol_score, initial_state = get_market_features(past_year_prices)
+		fis_sim = simulate_fis_on_real_data(prices)
+		markov_sim = simulate_markov_hold(init_state, transition_matrix, state_returns)
+		print(f"Forecast (simulated future)")
+		print(f"FIS strategy capital:   {fis_sim:.4f}")
+		print(f"Markov hold capital:    {markov_sim:.4f}")
 
-	print(f"Mode: {mode}")
-	print(f"Ticker: {ticker}")
-	print("Transition Matrix:")
-	print(np.round(transition_matrix, 3))
-	print("Estimated Returns per State:")
-	for k, v in returns.items():
-		print(f"  {k}: {v:.4f}")
-	print(f"Market state score: {market_score}")
-	print(f"Volatility score: {vol_score:.2f}")
-	print(f"Initial market state: {initial_state}")
 
-	states = ['Growth', 'Stable', 'Decline']
-	market_chain = MarkovChain(states, transition_matrix)
-
-	sim_count = 1000
-	days = 252
-
-	simulators = [ctrl.ControlSystemSimulation(attractiveness_ctrl) for _ in range(sim_count)]
-	fuzzy_results = [
-		simulate_fuzzy_strategy(simulators[i], initial_state, market_score, vol_score, returns, market_chain, days)
-		for i in range(sim_count)
-	]
-	avg_fuzzy = sum(fuzzy_results) / sim_count
-
-	print(f"\nFuzzy strategy: average final capital after {sim_count} simulations = {avg_fuzzy:.4f}")
-
-	if mode == "backtest":
-		actual_prices = prices[(prices.index >= pd.Timestamp(end_date)) & (prices.index <= pd.Timestamp(eval_end))]
-		if not actual_prices.empty:
-			actual_return = actual_prices.iloc[-1] / actual_prices.iloc[0]
-			print(f"Real return from {actual_prices.index[0].date()} to {actual_prices.index[-1].date()} = {actual_return:.4f}")
-			diff = avg_fuzzy - actual_return
-			print(f"Difference between simulated and real return = {diff:.4f}")
-
-			if args.visualization:
-				actual_series = actual_prices / actual_prices.iloc[0]
-				sim_curve = [1.0]
-				state = initial_state
-				simulator = ctrl.ControlSystemSimulation(attractiveness_ctrl)
-				for _ in range(1, len(actual_series)):
-					attractiveness = get_fast_attractiveness(simulator, market_score, vol_score)
-					if attractiveness > 50:
-						r = returns[state]
-						sim_curve.append(sim_curve[-1] * (1 + r))
-					elif attractiveness < 50:
-						r = -returns[state]
-						sim_curve.append(sim_curve[-1] * (1 - r))
-					else:
-						sim_curve.append(sim_curve[-1])
-					state = market_chain.next_state(state)
-
-				plt.figure(figsize=(10, 5))
-				plt.plot(actual_series.index[:len(sim_curve)], actual_series[:len(sim_curve)], label="Real price")
-				plt.plot(actual_series.index[:len(sim_curve)], sim_curve, label="Simulated strategy")
-				plt.xlabel("Date")
-				plt.ylabel("Normalized value")
-				plt.title(f"Backtest: {ticker}")
-				plt.legend()
-				plt.grid(True)
-				plt.tight_layout()
-				plt.show()
-		else:
-			print("Not enough real price data for comparison.")
-	else:
-		if avg_fuzzy > 1.0:
-			print("Recommendation: Fuzzy-based strategy appears profitable.")
-		else:
-			print("Recommendation: Strategy underperforms or is neutral.")
+if __name__ == "__main__":
+	main()
