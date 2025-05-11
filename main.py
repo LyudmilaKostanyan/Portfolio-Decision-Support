@@ -2,13 +2,19 @@ import argparse
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import skfuzzy.control as ctrl
+
 from datetime import datetime
 from markov import MarkovChain
 from fuzzy import get_fast_attractiveness, attractiveness_ctrl
-import skfuzzy.control as ctrl
 
-
-def classify_return(r, threshold=0.02):
+def classify_return(r: float, threshold: float = 0.02) -> str:
+	"""
+	Classify a daily return into one of three market states:
+	  - 'Growth'   if return > threshold
+	  - 'Decline'  if return < -threshold
+	  - 'Stable'   otherwise
+	"""
 	if r > threshold:
 		return "Growth"
 	elif r < -threshold:
@@ -16,62 +22,105 @@ def classify_return(r, threshold=0.02):
 	else:
 		return "Stable"
 
+def build_transition_matrix(states: list[str]) -> list[list[float]]:
+	"""
+	Count observed state transitions and normalize into probabilities.
+	Returns a 3×3 matrix for states ['Growth', 'Stable', 'Decline'].
+	"""
+	categories = ["Growth", "Stable", "Decline"]
+	counts = {s: {t: 0 for t in categories} for s in categories}
+	for prev, curr in zip(states, states[1:]):
+		counts[prev][curr] += 1
 
-def build_transition_matrix(states):
-	transitions = {s: {t: 0 for t in ["Growth", "Stable", "Decline"]} for s in ["Growth", "Stable", "Decline"]}
-	for i in range(1, len(states)):
-		prev, curr = states[i - 1], states[i]
-		transitions[prev][curr] += 1
-
-	matrix = []
-	for s in ["Growth", "Stable", "Decline"]:
-		total = sum(transitions[s].values())
+	matrix: list[list[float]] = []
+	for s in categories:
+		total = sum(counts[s].values())
 		if total == 0:
-			matrix.append([1 / 3] * 3)
+			matrix.append([1/3, 1/3, 1/3])
 		else:
-			matrix.append([transitions[s][t] / total for t in ["Growth", "Stable", "Decline"]])
+			matrix.append([counts[s][t] / total for t in categories])
 	return matrix
 
-
-def estimate_state_returns(returns, states):
-	grouped = {s: [] for s in ["Growth", "Stable", "Decline"]}
+def estimate_state_returns(returns: pd.Series, states: list[str]) -> dict[str, float]:
+	"""
+	Compute the average daily return observed in each market state.
+	"""
+	grouped = {"Growth": [], "Stable": [], "Decline": []}
 	for r, s in zip(returns, states):
 		grouped[s].append(r)
-	return {s: np.mean(grouped[s]) if grouped[s] else 0.0 for s in grouped}
+	return {s: (np.mean(vals) if vals else 0.0) for s, vals in grouped.items()}
 
-
-def get_market_features(window):
-	vol = min(max(window.pct_change().std() * 1000, 0), 100)
+def get_market_features(window: pd.Series) -> tuple[float, float, str]:
+	"""
+	From the last 30 prices:
+	  - volatility_score: scaled standard deviation (0–100)
+	  - state: based on deviation from 30-day mean
+	Returns (market_score, volatility_score, state).
+	"""
+	volatility_score = min(max(window.pct_change().std() * 1000, 0), 100)
 	diff = (window.iloc[-1] - window.mean()) / window.mean()
 	if diff > 0.02:
-		state = "Growth"
-		score = 80
+		return 80.0, volatility_score, "Growth"
 	elif diff < -0.02:
-		state = "Decline"
-		score = 20
+		return 20.0, volatility_score, "Decline"
 	else:
-		state = "Stable"
-		score = 50
-	return score, vol, state
+		return 50.0, volatility_score, "Stable"
 
+def simulate_fis_on_real_data(prices: pd.Series) -> float:
+	"""
+	Simulate trading over a year using fuzzy logic with market_state and volatility as inputs.
+	"""
+	capital = 1.0
 
-def simulate_fis_on_real_data(prices):
-	total_return = 1.0
+	returns = prices.pct_change().dropna().reset_index(drop=True)
+	prices = prices.iloc[1:].reset_index(drop=True)
+
 	for i in range(30, len(prices) - 1):
 		window = prices[i - 30:i]
-		market_score, vol_score, state = get_market_features(window)
-		attractiveness = get_fast_attractiveness(ctrl.ControlSystemSimulation(attractiveness_ctrl), market_score, vol_score)
-		ret = prices.pct_change().iloc[i + 1]
+		
+		# market_state: deviation from mean (mapped to 0–100 scale)
+		diff_ratio = (window.iloc[-1] - window.mean()) / window.mean()
+		if diff_ratio > 0.02:
+			market_state_val = 80.0
+		elif diff_ratio < -0.02:
+			market_state_val = 20.0
+		else:
+			market_state_val = 50.0
+
+		# volatility: std scaled to 0–100
+		volatility_val = min(max(window.pct_change().std() * 1000, 0), 100)
+
+		# Evaluate FIS
+		simulator = ctrl.ControlSystemSimulation(attractiveness_ctrl)
+		attractiveness = get_fast_attractiveness(simulator, market_state_val, volatility_val)
+
+		ret = returns[i + 1]
+
+		# Adjust capital
 		if attractiveness > 60:
-			total_return *= (1 + ret)
+			capital *= (1 + ret)
 		elif attractiveness < 40:
-			total_return *= (1 - ret)
-	return total_return
+			capital *= (1 - ret)
+		# else: stay in cash
 
+	return capital
 
-def simulate_markov_hold(start_state, transition_matrix, state_returns, days=252, n=1000):
+def simulate_markov_hold(
+	start_state: str,
+	transition_matrix: list[list[float]],
+	state_returns: dict[str, float],
+	days: int = 252,
+	n: int = 1000
+) -> float:
+	"""
+	Monte Carlo simulation of a Markov-hold strategy:
+	  - start in start_state
+	  - for `days` trading days, multiply capital by average return for current state
+	  - randomly transition to next state
+	Returns average end-of-period multiplier over `n` runs.
+	"""
 	mc = MarkovChain(["Growth", "Stable", "Decline"], transition_matrix)
-	results = []
+	results: list[float] = []
 	for _ in range(n):
 		state = start_state
 		capital = 1.0
@@ -81,51 +130,85 @@ def simulate_markov_hold(start_state, transition_matrix, state_returns, days=252
 		results.append(capital)
 	return sum(results) / n
 
-
 def main():
-	parser = argparse.ArgumentParser()
-	parser.add_argument("--ticker", default="AAPL")
-	parser.add_argument("--mode", choices=["backtest", "forecast"], default="backtest")
+	parser = argparse.ArgumentParser(
+		description="Compare real NVDA performance with FIS and Markov strategies"
+	)
+	parser.add_argument(
+		"--ticker", default="NVDA",
+		help="Ticker symbol, e.g. NVDA"
+	)
+	parser.add_argument(
+		"--mode", choices=["backtest", "forecast"],
+		default="backtest",
+		help="backtest: past year; forecast: simulate next year"
+	)
 	args = parser.parse_args()
 
-	today = datetime.today()
-	if args.mode == "backtest":
-		start = f"{today.year - 2}-01-01"
-		end = f"{today.year - 1}-12-31"
-	else:
-		start = f"{today.year - 2}-01-01"
-		end = today.strftime("%Y-%m-%d")
+	# Download one year of adjusted closing prices
+	data = yf.download(
+		args.ticker,
+		period="1y",
+		progress=False,
+		auto_adjust=True
+	)
 
-	data = yf.download(args.ticker, start=start, end=end, progress=False, auto_adjust=True)
+	# Extract the Close price series (ensure it's a Series, not DataFrame)
+	prices = data["Close"]
+	if isinstance(prices, pd.DataFrame):
+		prices = prices.iloc[:, 0]
+	prices = prices.dropna()
 
-	# FIX: safely extract Close prices
-	if isinstance(data.columns, pd.MultiIndex):
-		prices = data["Close", args.ticker]
-	else:
-		prices = data["Close"]
-
-	prices = pd.to_numeric(prices, errors="coerce").dropna()
+	# Compute daily returns and classify market states
 	returns = prices.pct_change().dropna()
 	states = [classify_return(r) for r in returns]
 
+	# Build Markov transition matrix and average returns per state
 	transition_matrix = build_transition_matrix(states)
 	state_returns = estimate_state_returns(returns, states)
-	market_score, vol_score, init_state = get_market_features(prices[-30:])
+
+	# Determine current market state from last 30 days
+	_, _, current_state = get_market_features(prices[-30:])
 
 	if args.mode == "backtest":
-		real_return = prices.iloc[-1] / prices.iloc[0]
-		fis_result = simulate_fis_on_real_data(prices)
-		markov_result = simulate_markov_hold(init_state, transition_matrix, state_returns)
-		print(f"Real market return: {real_return:.4f}")
-		print(f"FIS strategy return:  {fis_result:.4f}")
-		print(f"Markov hold return:  {markov_result:.4f}")
-	else:
-		fis_sim = simulate_fis_on_real_data(prices)
-		markov_sim = simulate_markov_hold(init_state, transition_matrix, state_returns)
-		print(f"Forecast (simulated future)")
-		print(f"FIS strategy capital:   {fis_sim:.4f}")
-		print(f"Markov hold capital:    {markov_sim:.4f}")
+		# Real percent return over the year
+		real_pct = prices.iloc[-1] / prices.iloc[0] - 1.0
 
+		# Strategy multipliers
+		fis_mul = simulate_fis_on_real_data(prices)
+		markov_mul = simulate_markov_hold(current_state, transition_matrix, state_returns)
+
+		# Hypothetical $1,000 investment
+		initial_capital = 1000.0
+		real_final = initial_capital * (1 + real_pct)
+		real_profit = real_final - initial_capital
+
+		fis_final = initial_capital * fis_mul
+		fis_profit = fis_final - initial_capital
+
+		markov_final = initial_capital * markov_mul
+		markov_profit = markov_final - initial_capital
+
+		# Plain-language output
+		print(f"\nIf you had invested $1,000 in {args.ticker} one year ago:")
+		print(f"\t• Today it would be worth ${real_final:,.2f},")
+		print(f"\t  a profit of ${real_profit:,.2f} ({real_pct:.2%}).\n")
+
+		print("Under the FIS-based trading strategy:")
+		print(f"\t• Your capital would be ${fis_final:,.2f},")
+		print(f"\t  a profit of ${fis_profit:,.2f} ({fis_mul - 1:.2%}).\n")
+
+		print("Under the Markov-hold strategy:")
+		print(f"\t• Your capital would be ${markov_final:,.2f},")
+		print(f"\t  a profit of ${markov_profit:,.2f} ({markov_mul - 1:.2%}).\n")
+	else:
+		# Forecast mode: show multipliers for next year
+		fis_mul = simulate_fis_on_real_data(prices)
+		markov_mul = simulate_markov_hold(current_state, transition_matrix, state_returns)
+
+		print("\nForecast for the next trading year (capital multipliers):")
+		print(f"\t• FIS strategy:    {fis_mul:.4f}×")
+		print(f"\t• Markov-hold:     {markov_mul:.4f}×\n")
 
 if __name__ == "__main__":
 	main()

@@ -25,10 +25,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy scipy packaging networkx scikit-fuzzy yfinance pandas matplotlib
 
-      - name: Run simulation in backtest mode
+      - name: Run simulation in backtest mode for NVDa
         run: |
-          python main.py --mode backtest --ticker AAPL
+          python main.py --mode backtest --ticker NVDA 
 
-      - name: Run simulation in forecast mode
+      - name: Run simulation in backtest mode for MULN
+        run: |
+          python main.py --mode backtest --ticker MULN
+
+      - name: Run simulation in backtest mode for TSLA
+        run: |
+          python main.py --mode backtest --ticker TSLA 
+
+      - name: Run simulation in forecast mode for AAPL
         run: |
           python main.py --mode forecast --ticker AAPL
