@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import skfuzzy.control as ctrl
+import matplotlib.pyplot as plt  # Added for visualization
 
 from datetime import datetime
 from markov import MarkovChain
@@ -60,7 +61,8 @@ def get_market_features(window: pd.Series) -> tuple[float, float, str]:
 	Returns (market_score, volatility_score, state).
 	"""
 	std_dev = window.pct_change().std()
-	volatility_score = min(max(std_dev * 1000, 0), 100)
+	# Modified: Reduced scaling factor from 1000 to 500
+	volatility_score = min(max(std_dev * 500, 0), 100)
 	diff = (window.iloc[-1] - window.mean()) / window.mean()
 
 	threshold = std_dev  # adaptive threshold
@@ -74,6 +76,10 @@ def get_market_features(window: pd.Series) -> tuple[float, float, str]:
 def simulate_fis_on_real_data(prices: pd.Series) -> float:
 	capital = 1.0
 	position = 0  # 0 = cash, 1 = long
+	trades = 0  # Track number of trades
+	positions = []  # For visualization
+	attractiveness_scores = []  # For visualization
+	price_history = []  # For visualization
 
 	returns = prices.pct_change().dropna().reset_index(drop=True)
 	prices = prices.iloc[1:].reset_index(drop=True)
@@ -90,19 +96,52 @@ def simulate_fis_on_real_data(prices: pd.Series) -> float:
 		else:
 			market_state_val = 50.0
 
-		volatility_val = min(max(std_dev * 1000, 0), 100)
+		# Modified: Reduced scaling factor from 1000 to 500
+		volatility_val = min(max(std_dev * 500, 0), 100)
 
 		simulator = ctrl.ControlSystemSimulation(attractiveness_ctrl)
 		attractiveness = get_fast_attractiveness(simulator, market_state_val, volatility_val)
 		ret = returns[i + 1]
 
-		if attractiveness > 60 and position == 0:
+		old_position = position
+		# Modified: Lowered buy threshold to 50 and sell threshold to 30
+		if attractiveness > 50 and position == 0:
 			position = 1
-		elif attractiveness < 40 and position == 1:
+			trades += 1
+		elif attractiveness < 30 and position == 1:
 			position = 0
+			trades += 1
 
 		if position == 1:
 			capital *= (1 + ret)
+
+		# Log state for debugging
+		print(f"Day {i}: Price={prices[i]:.2f}, MarketState={market_state_val}, "
+		      f"Volatility={volatility_val:.2f}, Attractiveness={attractiveness:.2f}, "
+		      f"Position={position}")
+		positions.append(position)
+		attractiveness_scores.append(attractiveness)
+		price_history.append(prices[i])
+
+	print(f"Total trades: {trades}")
+	# Added: Visualize trading decisions
+	plt.figure(figsize=(12, 6))
+	plt.subplot(3, 1, 1)
+	plt.plot(price_history, label="Price")
+	plt.title("Price History")
+	plt.legend()
+	plt.subplot(3, 1, 2)
+	plt.plot(attractiveness_scores, label="Attractiveness", color="orange")
+	plt.axhline(y=50, color="g", linestyle="--", label="Buy Threshold")
+	plt.axhline(y=30, color="r", linestyle="--", label="Sell Threshold")
+	plt.title("Attractiveness Scores")
+	plt.legend()
+	plt.subplot(3, 1, 3)
+	plt.plot(positions, label="Position", color="purple")
+	plt.title("Position (0=Cash, 1=Long)")
+	plt.legend()
+	plt.tight_layout()
+	plt.show()
 
 	return capital
 

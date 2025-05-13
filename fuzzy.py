@@ -27,7 +27,8 @@ investment_attractiveness['high'] = fuzz.trimf(investment_attractiveness.univers
 # Each rule follows the pattern: IF condition THEN result
 rule1 = ctrl.Rule(market_state['growth'] & volatility['low'], investment_attractiveness['high'])
 rule2 = ctrl.Rule(market_state['growth'] & volatility['medium'], investment_attractiveness['medium'])
-rule3 = ctrl.Rule(market_state['growth'] & volatility['high'], investment_attractiveness['medium'])
+# Modified: Changed 'medium' to 'high' to favor holding during volatile growth
+rule3 = ctrl.Rule(market_state['growth'] & volatility['high'], investment_attractiveness['high'])
 
 rule4 = ctrl.Rule(market_state['stable'] & volatility['low'], investment_attractiveness['high'])
 rule5 = ctrl.Rule(market_state['stable'] & volatility['medium'], investment_attractiveness['medium'])
