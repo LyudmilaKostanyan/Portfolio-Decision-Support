@@ -11,13 +11,13 @@ investment_attractiveness = ctrl.Consequent(np.arange(0, 101, 1), 'investment_at
 # 2. Assign membership functions to each fuzzy variable
 # Membership functions define what "low", "medium", and "high" mean for each variable
 # In ./resources/membership_functions.png, you can see plotted membership functions for each variable.
-volatility['low'] = fuzz.trimf(volatility.universe, [0, 0, 50])
-volatility['medium'] = fuzz.trimf(volatility.universe, [25, 50, 75])
-volatility['high'] = fuzz.trimf(volatility.universe, [50, 100, 100])
+volatility['low'] = fuzz.gaussmf(volatility.universe, 0, 15)
+volatility['medium'] = fuzz.gaussmf(volatility.universe, 50, 15)
+volatility['high'] = fuzz.gaussmf(volatility.universe, 100, 15)
 
-market_state['decline'] = fuzz.trimf(market_state.universe, [0, 0, 50])
-market_state['stable'] = fuzz.trimf(market_state.universe, [25, 50, 75])
-market_state['growth'] = fuzz.trimf(market_state.universe, [50, 100, 100])
+market_state['decline'] = fuzz.gaussmf(market_state.universe, 0, 15)
+market_state['stable'] = fuzz.gaussmf(market_state.universe, 50, 15)
+market_state['growth'] = fuzz.gaussmf(market_state.universe, 100, 15)
 
 investment_attractiveness['low'] = fuzz.trimf(investment_attractiveness.universe, [0, 0, 50])
 investment_attractiveness['medium'] = fuzz.trimf(investment_attractiveness.universe, [25, 50, 75])
@@ -27,14 +27,13 @@ investment_attractiveness['high'] = fuzz.trimf(investment_attractiveness.univers
 # Each rule follows the pattern: IF condition THEN result
 rule1 = ctrl.Rule(market_state['growth'] & volatility['low'], investment_attractiveness['high'])
 rule2 = ctrl.Rule(market_state['growth'] & volatility['medium'], investment_attractiveness['medium'])
-# Modified: Changed 'medium' to 'high' to favor holding during volatile growth
-rule3 = ctrl.Rule(market_state['growth'] & volatility['high'], investment_attractiveness['high'])
+rule3 = ctrl.Rule(market_state['growth'] & volatility['high'], investment_attractiveness['low'])
 
-rule4 = ctrl.Rule(market_state['stable'] & volatility['low'], investment_attractiveness['high'])
-rule5 = ctrl.Rule(market_state['stable'] & volatility['medium'], investment_attractiveness['medium'])
+rule4 = ctrl.Rule(market_state['stable'] & volatility['low'], investment_attractiveness['medium'])
+rule5 = ctrl.Rule(market_state['stable'] & volatility['medium'], investment_attractiveness['low'])
 rule6 = ctrl.Rule(market_state['stable'] & volatility['high'], investment_attractiveness['low'])
 
-rule7 = ctrl.Rule(market_state['decline'] & volatility['low'], investment_attractiveness['medium'])
+rule7 = ctrl.Rule(market_state['decline'] & volatility['low'], investment_attractiveness['low'])
 rule8 = ctrl.Rule(market_state['decline'] & volatility['medium'], investment_attractiveness['low'])
 rule9 = ctrl.Rule(market_state['decline'] & volatility['high'], investment_attractiveness['low'])
 
